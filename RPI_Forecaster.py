@@ -11,10 +11,16 @@ from darts.metrics import mape
 import importlib
 import sys
 from petrol_api import get_petrol_prices
+from ts_models import *
+import ast
 
 global workstation
 workstation = "MAC"
+if workstation == "PC":
+    subcomponents = r"C:\Users\joshb\Desktop\RPI Forecasting\RPI_Subcomponents.xlsx"
 
+if workstation == "MAC":
+    subcomponents = r"/Users/Josh/Desktop/RPI_Forecaster/RPI_Subcomponents.xlsx"
 
 def str_to_class(classname):
     return getattr(sys.modules[__name__], classname)
@@ -52,7 +58,6 @@ class Subcomponent:
 
     def forecast(self, data, idx):
 
-            global new_model
             wb = xw.Book.caller()
             idx = idx
             df = data
@@ -113,13 +118,9 @@ def pull_rpi_data():
 
     if workstation == "PC":
         subcomponents = r"C:\Users\joshb\Desktop\RPI Forecasting\RPI_Subcomponents.xlsx"
-        weights = r"C:\Users\joshb\Desktop\RPI Forecasting\Weights.xlsx"
-        model_overrides = r"C:\Users\joshb\Desktop\RPI Forecasting\Model_Overrides.xlsx"
 
     if workstation == "MAC":
         subcomponents = r"/Users/Josh/Desktop/RPI_Forecaster/RPI_Subcomponents.xlsx"
-        # weights = r"C:\Users\joshb\Desktop\RPI Forecasting\Weights.xlsx"
-        # model_overrides = r"C:\Users\joshb\Desktop\RPI Forecasting\Model_Overrides.xlsx"
 
     codes = pd.read_excel(subcomponents)['Code_TS']
     descriptions = pd.read_excel(subcomponents)['Description']
@@ -263,32 +264,49 @@ def pull_ofgem_data():
     wb.sheets('OFGEM').range('h2').value = elec_prices_used
     wb.sheets('OFGEM').range('h24').value = gas_prices_used
 
+@xw.func()
+def update_xlsm_forecast_tab():
+
+    wb = xw.Book(r'/Users/Josh/Desktop/RPI_Forecaster/RPI_Forecaster.xlsm')
+
+    if workstation == "PC":
+        subcomponents = r"C:\Users\joshb\Desktop\RPI Forecasting\RPI_Subcomponents.xlsx"
+
+    if workstation == "MAC":
+        subcomponents = r"/Users/Josh/Desktop/RPI_Forecaster/RPI_Subcomponents.xlsx"
+
+    descriptions = pd.read_excel(subcomponents)['Description']
+    metrics_df = pd.read_csv(r'/Users/Josh/Desktop/RPI_Forecaster/Model Selection/RMSE_results.csv', index_col=0)
+    best_models = {}
+    best_forecasts_df = pd.DataFrame(columns=descriptions)
+    for desc in descriptions:
+        i = metrics_df.loc[desc, 'RMSE']
+        min_rmse = min(ast.literal_eval(i).values())
+        forecast_df = pd.read_csv(r'/Users/Josh/Desktop/RPI_Forecaster/Forward Looking Forecasts/'+str(desc)+'.csv', index_col=0)
+        # best_model = [key for key in ast.literal_eval(i) if ast.literal_eval(i)[key] == min_rmse]
+        # best_models[desc] = best_model[0]
+        best_forecasts_df[desc] = forecast_df
+
+    best_forecasts_df.index = forecast_df.index
+    print(best_forecasts_df)
+    mom_sheet = wb.sheets['MoM Forecasts']
+    mom_sheet.range('A1').value = best_forecasts_df
+
 @xw.func
 def main():
 
     xw.Book("RPI_Forecaster.xlsm").set_mock_caller()
     wb = xw.Book.caller()
 
-
-
     if workstation == "PC":
         subcomponents = r"C:\Users\joshb\Desktop\RPI Forecasting\RPI_Subcomponents.xlsx"
-        weights = r"C:\Users\joshb\Desktop\RPI Forecasting\Weights.xlsx"
-        model_overrides = r"C:\Users\joshb\Desktop\RPI Forecasting\Model_Overrides.xlsx"
 
     if workstation == "MAC":
         subcomponents = r"/Users/Josh/Desktop/RPI_Forecaster/RPI_Subcomponents.xlsx"
-        # weights = r"C:\Users\joshb\Desktop\RPI Forecasting\Weights.xlsx"
-        # model_overrides = r"C:\Users\joshb\Desktop\RPI Forecasting\Model_Overrides.xlsx"
-
 
     codes = pd.read_excel(subcomponents)['Code_TS']
-    # weights = pd.read_excel(weights)
     descriptions = pd.read_excel(subcomponents)['Description']
-    latest_weights = pd.read_excel(subcomponents)['Weight']
     subgroups = pd.read_excel(subcomponents)['SubGroup']
-    # model_overrides = pd.read_excel(model_overrides)
-    model_overrides=[]
     hist_data = []
     forecasts = []
 
@@ -296,7 +314,7 @@ def main():
     hist_df = pd.DataFrame([], columns=descriptions)
 
     # if want to get new data
-    RETRIEVE = True
+    RETRIEVE = False
 
     if RETRIEVE == True:
 
@@ -305,30 +323,18 @@ def main():
             code = Subcomponent(codes.iloc[idx], descriptions.iloc[idx], subgroups.iloc[idx])
             print(code.description)
             data = code.retrieve(code.short_code)
+            #change this bit for updated forecast method
 
-            # check that we want to use time series forecasting method for this subcomponent
-            if code.short_code not in model_overrides:
-                prediction, model, mom_forecasts, selected_models = code.forecast(data, idx)
-                # update the first forecast mom versus last available index value
-                mom_forecasts.iloc[0] = prediction.iloc[0] / data['value'].iloc[-1] - 1
-                # prediction = Forecast(prediction, mom_forecasts, codes.iloc[idx],
-                #                       TimeSeries.from_dataframe(prediction).time_index[:1],
-                #                       TimeSeries.from_dataframe(prediction).time_index[-1:],
-                #                       latest_weights.iloc[idx],
-                #                       model)
+            prediction, model, mom_forecasts, selected_models = code.forecast(data, idx)
 
-                hist_data.append(data)
-                forecasts.append(prediction)
 
-                mom_forecasts.append(mom_forecasts)
+            # update the first forecast mom versus last available index value
+            mom_forecasts.iloc[0] = prediction.iloc[0] / data['value'].iloc[-1] - 1
 
-            # otherwise pull correct forecasting model
-            else:
-                # todo generate forecasts for overriden models
-                hist_data.append(data)
-                forecasts.append(prediction)
-                mom_forecasts.append(mom_forecasts)
-                pass
+
+            hist_data.append(data)
+            forecasts.append(prediction)
+            mom_forecasts.append(mom_forecasts)
 
         picklecreator(hist_data)
         # pd.DataFrame(hist_data).to_csv(r"C:\Users\joshb\Desktop\RPI Forecasting\HistData.csv")
@@ -345,28 +351,19 @@ def main():
             data = pd.read_pickle(fname)
             hist_data.append(data)
 
-            # check that we want to use time series forecasting method for this subcomponent
-            if code.short_code not in model_overrides:
-                prediction, model, mom_forecasts, selected_models = code.forecast(data, idx)
-                # update the first forecast mom versus last available index value
-                if idx == 0:
-                    forecast_df[code.description] = mom_forecasts['value']
-                    forecast_df.index = mom_forecasts.index
-                    dates = data['date']
-                    hist_df[code.description] = data['value']
+            prediction, model, mom_forecasts, selected_models = code.forecast(data, idx)
 
-                else:
-                    forecast_df[code.description] = mom_forecasts['value']
-                    hist_df[code.description] = data['value']
+            # update the first forecast mom versus last available index value
+            if idx == 0:
+                forecast_df[code.description] = mom_forecasts['value']
+                forecast_df.index = mom_forecasts.index
+                dates = data['date']
+                hist_df[code.description] = data['value']
 
             else:
-                # todo generate forecasts for overriden models
-                hist_data.append(data)
-                forecasts.append(prediction)
-                mom_forecasts.append(mom_forecasts)
-                pass
+                forecast_df[code.description] = mom_forecasts['value']
+                hist_df[code.description] = data['value']
 
-        #wb = xw.Book(r"C:\Users\joshb\Desktop\RPI Forecasting\Forecaster.xlsx")
         mom_sheet = wb.sheets['MoM Forecasts']
         mom_sheet.range('A1').value = forecast_df
         hist_df.index = dates
@@ -390,6 +387,8 @@ def load_weights():
     weights_sheet = wb.sheets['Hist Weights']
     weights_sheet.range("A1").value = weights
 
+
 if __name__ == "__main__":
-    xw.Book("RPI_Forecaster.xlsm").set_mock_caller()
-    main()
+    # xw.Book("RPI_Forecaster.xlsm").set_mock_caller()
+    update_xlsm_forecast_tab()
+    # main()
