@@ -1,12 +1,18 @@
+import darts.metrics
 import pandas as pd
 from ts_models import *
 from RPI_Forecaster import Subcomponent
 from darts.models import ExponentialSmoothing, FFT, AutoARIMA, RNNModel, Theta
 from darts.dataprocessing.transformers import Scaler
+from darts.utils.statistics import plot_acf
 import warnings
 import logging
+import math
+import ast
+import xlwings as xw
 warnings.filterwarnings("ignore")
 logging.disable(logging.CRITICAL)
+
 
 
 workstation = "MAC"
@@ -115,9 +121,140 @@ def create_forecast_matrix(hist_df, description, models):
         fname = r'/Users/Josh/Desktop/RPI_Forecaster/Model Selection/'+str(desc)+'.csv'
         errors_df.to_csv(fname)
 
+def MAPE(Y_actual,Y_Predicted):
+    # Y_actual.replace(to_replace=0, value=0.0000001, inplace=True)
+    print('here')
+    print(np.abs(Y_actual - Y_Predicted))
+
+    mape = np.mean(np.abs(Y_actual - Y_Predicted)/(Y_actual))*100
+    return mape
+
+def mean_bias_error(true, pred):
+    true.replace(to_replace=0, value=0.0000001, inplace=True)
+    mbe_loss = np.sum(true - pred)/true.size
+    return mbe_loss
+
+def RSME(y_actual, y_predicted):
+    MSE = np.square(np.subtract(y_actual, y_predicted)).mean()
+    RMSE = math.sqrt(MSE)
+    return RMSE
+
+def get_seasonality(hist_df):
+
+    seasonality_df = pd.DataFrame([])
+
+    for desc in [' Furniture']:
+
+        train = TimeSeries.from_series(hist_df[desc][-145:-25].pct_change().dropna())
+        if desc == ' Furniture':
+            plot_acf(train,24)
+        seas = check_seasonality(train, max_lag=12, m=6)
+        seasonality_df.loc[desc, 'Is seasonal?'] = seas[0]
+        seasonality_df.loc[desc, 'Seasonality Period'] = seas[1]
+
+    return seasonality_df
+
+def select_model(hist_df):
+
+    metrics_df = pd.DataFrame([], columns=['RMSE'])
+    for desc in descriptions:
+
+        df = pd.read_csv(r'/Users/Josh/Desktop/RPI_Forecaster/Model Selection/'+str(desc)+'.csv')
+        val = hist_df[desc][-25:].pct_change()
+        val = val[1:]
+        train = hist_df[desc][:-25].pct_change().dropna()
+        rmse_dict = {}
+        df.set_index(pd.to_datetime(df.iloc[:, 0]), inplace=True)
+        for model in df.columns[1:]:
+            pred = df[model]
+            pred_ts = TimeSeries.from_series(pred)
+            val_ts = TimeSeries.from_series(val)
+            rmse = darts.metrics.rmse(actual_series=val_ts, pred_series=pred_ts)
+            rmse_dict[model] = round(rmse, 5)
+        metrics_df.loc[desc] = rmse_dict
+    metrics_df.to_csv(r'/Users/Josh/Desktop/RPI_Forecaster/Model Selection/RMSE_results.csv')
+
+def create_fwd_looking_forecasts():
+
+    metrics_df = pd.read_csv(r'/Users/Josh/Desktop/RPI_Forecaster/Model Selection/RMSE_results.csv', index_col=0)
+    best_models = {}
+    for desc in descriptions:
+        series = hist_df[desc].pct_change().dropna()
+        series_ts = TimeSeries.from_series(series)
+        i = metrics_df.loc[desc, 'RMSE']
+        min_rmse = min(ast.literal_eval(i).values())
+        best_model = [key for key in ast.literal_eval(i) if ast.literal_eval(i)[key] == min_rmse][0]
+        best_models[desc] = best_model
+
+        if "SARIMAX" in best_model:  # specific model calibration for SARIMAX model
+            p = int(best_model[10])
+            d = int(best_model[15])
+            q = int(best_model[20])
+            forecasts = SARIMAX_known(series, p, d, q)
+
+        elif best_model == "RNN":
+            my_model = RNNModel(model="LSTM",
+                                hidden_dim=20,
+                                dropout=0,
+                                batch_size=16,
+                                n_epochs=150,
+                                optimizer_kwargs={"lr": 1e-3},
+                                model_name="LSTM",
+                                log_tensorboard=True,
+                                random_state=42,
+                                training_length=20,
+                                input_chunk_length=14,
+                                force_reset=True,
+                                save_checkpoints=True)
+
+            transformer = Scaler()
+            series_transformed = transformer.fit_transform(series_ts)
+            my_model.fit(
+                series_transformed,
+                verbose=True,
+            )
+            forecasts = my_model.predict(n=25)
+            forecasts = transformer.inverse_transform(forecasts)
+            forecasts = TimeSeries.pd_series(forecasts)
+
+        else:  # fit and forecast using selected Darts models
+            models[best_model].fit(series=series_ts)
+            forecasts = models[best_model].predict(25)
+            forecasts = TimeSeries.pd_series(forecasts)
+
+        month = str(forecasts.index[0])
+        fname = r'/Users/Josh/Desktop/RPI_Forecaster/Forward Looking Forecasts/'+month+'/'+str(desc)+'.csv'
+        forecasts.to_csv(fname)
+
+    pass
+
+def update_xlsm_forecast_tab():
+
+    descriptions = pd.read_excel(subcomponents)['Description']
+    metrics_df = pd.read_csv(r'/Users/Josh/Desktop/RPI_Forecaster/Model Selection/RMSE_results.csv', index_col=0)
+    best_models = {}
+    best_forecasts_df = pd.DataFrame(columns=descriptions)
+    for desc in descriptions:
+        i = metrics_df.loc[desc, 'RMSE']
+        min_rmse = min(ast.literal_eval(i).values())
+        forecast_df = pd.read_csv(r'/Users/Josh/Desktop/RPI_Forecaster/Forward Looking Forecasts/'+str(desc)+'.csv', index_col=0)
+        best_model = [key for key in ast.literal_eval(i) if ast.literal_eval(i)[key] == min_rmse]
+        best_models[desc] = best_model
+        best_forecasts_df[desc] = forecast_df[best_model]
+
+    best_forecasts_df.index = forecast_df.index
+    print(best_forecasts_df)
+    # xw.Book("RPI_Forecaster.xlsm").set_mock_caller()
+    # wb = xw.Book.caller()
+    # mom_sheet = wb.sheets['MoM Forecasts']
+    # mom_sheet.range('A1').value = forecast_df
+
 
 hist_df = retrieve_pickles(codes=pd.read_excel(subcomponents)['Code_TS'])
-print(hist_df)
 models = {'SARIMAX': SARIMAX, 'Exponential Smoothing': ExponentialSmoothing(), 'Auto Arima': AutoARIMA(),
           'RNN': RNNModel(input_chunk_length=14)}
-create_forecast_matrix(hist_df, description=descriptions, models=models)
+# create_forecast_matrix(hist_df, description=descriptions, models=models)
+get_seasonality(hist_df)
+# select_model(hist_df)
+# create_fwd_looking_forecasts()
+# update_xlsm_forecast_tab()

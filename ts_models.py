@@ -9,6 +9,10 @@ from darts.metrics import mape
 import os
 #statsmodels
 import statsmodels.api as sm
+from darts.utils.statistics import check_seasonality
+
+
+
 
 def SARIMAX(data):
 
@@ -43,3 +47,13 @@ def SARIMAX(data):
     params = {'p': int(p_optimal), 'd': int(d_optimal), 'q': int(q_optimal)}
 
     return results.forecast(24), params
+
+def SARIMAX_known(data, p, d, q):
+
+    mod = sm.tsa.statespace.SARIMAX(data,
+                                    order=(p, d, q),
+                                    seasonal_order=(1, 1, 0, 12),
+                                    enforce_stationarity=False,
+                                    enforce_invertibility=False)
+    results = mod.fit(disp=False)
+    return results.forecast(25)
