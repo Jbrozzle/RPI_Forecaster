@@ -13,6 +13,8 @@ import sys
 from petrol_api import get_petrol_prices
 from ts_models import *
 import ast
+import io
+import datetime
 
 global workstation
 workstation = "MAC"
@@ -238,7 +240,7 @@ def pull_hpi_data():
     df.set_index('Date', inplace=True)
     df = df['Average_Price']
     df = df.sort_values(axis=0, ascending=False)
-    housing_sheet.range("A23").value = df
+    housing_sheet.range("A38").value = df
 
 @xw.func()
 def pull_ofgem_data():
@@ -291,6 +293,36 @@ def update_xlsm_forecast_tab():
     print(best_forecasts_df)
     mom_sheet = wb.sheets['MoM Forecasts']
     mom_sheet.range('A1').value = best_forecasts_df
+
+@xw.func()
+def pull_boe_mips():
+    wb = xw.Book.caller()
+    url_endpoint = 'http://www.bankofengland.co.uk/boeapps/iadb/fromshowcolumns.asp?csv.x=yes'
+    date_to = datetime.date(datetime.datetime.today().year, datetime.datetime.today().month, 1)
+    date_to_str = date_to.strftime('%d/%b/%Y')
+    payload = {
+        'Datefrom': '01/Jan/2000',
+        'Dateto': date_to_str,
+        'SeriesCodes': 'IUMZO27,IUMZICQ,CFMZ6IY',
+        'CSVF': 'TN',
+        'UsingCodes': 'Y',
+        'VPD': 'Y',
+        'VFD': 'N'
+    }
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) '
+                      'AppleWebKit/537.36 (KHTML, like Gecko) '
+                      'Chrome/54.0.2840.90 '
+                      'Safari/537.36'
+    }
+    response = requests.get(url_endpoint, params=payload, headers=headers)
+    df = pd.read_csv(io.BytesIO(response.content))
+    df.set_index('DATE', inplace=True)
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index(ascending=False)
+    df = df.rename(columns={'IUMZO27': '5y 60% LTV', 'IUMZICQ': '2y 60% LTV', 'CFMZ6IY': 'Base rate tracker'})
+    wb.sheets('Housing').range('AG1').value = df
 
 @xw.func
 def main():
